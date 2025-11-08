@@ -1,16 +1,22 @@
 import { Resend } from "resend";
+import { createClient } from "@supabase/supabase-js";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 export default async function handler(req, res) {
+  // --- CORS: permette richieste dal browser (in development/production)
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "authorization, x-client-info, apikey, content-type"
+  );
+
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "authorization, x-client-info, apikey, content-type");
     return res.status(200).end();
   }
 
@@ -19,62 +25,42 @@ export default async function handler(req, res) {
   }
 
   try {
+    // ci aspettiamo JSON con { forms: [...] }
     const { forms } = req.body;
 
+    // (Se vuoi supportare multipart/form-data in futuro, va gestito qui)
     let emailBody = "<h1>Nuovi dati dal form COHO</h1>";
 
-    forms.forEach((form, index) => {
+    (forms || []).forEach((form, index) => {
       emailBody += `
         <h2>Annuncio ${index + 1}</h2>
-        <p><strong>Nome host:</strong> ${form.hostName}</p>
+        <p><strong>Nome host:</strong> ${form.hostName || "N/A"}</p>
         <p><strong>Nome B&B:</strong> ${form.bnbName || "N/A"}</p>
-        <p><strong>Indirizzo:</strong> ${form.address}</p>
-
-        <h3>Check-in</h3>
-        <p>${form.checkinInstructions}</p>
-
-        <h3>Istruzioni stanza</h3>
-        <p>${form.roomInstructions || "N/A"}</p>
-
-        <h3>Regole della casa</h3>
-        <p>${form.houseRules}</p>
-
-        <h3>Servizi e dintorni</h3>
-        <ul>${form.services.map(s => `<li>${s}</li>`).join("")}</ul>
-
-        <h3>Wi-Fi</h3>
-        <p><strong>Nome:</strong> ${form.wifiName}</p>
-        <p><strong>Password:</strong> ${form.wifiPassword}</p>
-
-        <h3>Check-out</h3>
-        <p>${form.checkoutInstructions}</p>
-
-        <h3>Consigli sulla città</h3>
-        <p>${form.cityTips.intro || "N/A"}</p>
-
-        <h4>Ristoranti</h4>
-        <ul>${form.cityTips.restaurants.map(r => `<li><strong>${r.name}</strong>: ${r.comment}</li>`).join("")}</ul>
-
-        <h4>Pub</h4>
-        <ul>${form.cityTips.pubs.map(p => `<li><strong>${p.name}</strong>: ${p.comment}</li>`).join("")}</ul>
-
-        <h4>Bar</h4>
-        <ul>${form.cityTips.bars.map(b => `<li><strong>${b.name}</strong>: ${b.comment}</li>`).join("")}</ul>
-
-        <h3>Piatti da non perdere</h3>
-        <ul>${form.dishes.map(d => `<li>${d}</li>`).join("")}</ul>
-
-        <h3>Tour consigliati</h3>
-        ${form.tours.map(t => `<div><strong>${t.title}</strong><p>${t.description}</p></div>`).join("")}
-
-        <hr/>
+        <p><strong>Indirizzo:</strong> ${form.address || "N/A"}</p>
       `;
+
+      // se ci sono immagini come URL (es. hostPhoto, checkinImage, tours[].imageUrl), le elenchiamo
+      if (form.hostPhoto) emailBody += `<p><img src="${form.hostPhoto}" alt="host photo" style="max-width:300px"/></p>`;
+      if (form.checkinImage) emailBody += `<p><img src="${form.checkinImage}" alt="checkin" style="max-width:300px"/></p>`;
+      if (form.checkoutImage) emailBody += `<p><img src="${form.checkoutImage}" alt="checkout" style="max-width:300px"/></p>`;
+      if (form.houseRulesImage) emailBody += `<p><img src="${form.houseRulesImage}" alt="house rules" style="max-width:300px"/></p>`;
+
+      if (Array.isArray(form.tours) && form.tours.length) {
+        emailBody += `<h3>Tours</h3>`;
+        form.tours.forEach((t, i) => {
+          emailBody += `<div><strong>${t.title || "Tour " + (i+1)}</strong><p>${t.description || ""}</p>`;
+          if (t.imageUrl) emailBody += `<p><img src="${t.imageUrl}" alt="tour image" style="max-width:300px"/></p>`;
+          emailBody += `</div>`;
+        });
+      }
+
+      emailBody += `<hr/>`;
     });
 
     const emailResponse = await resend.emails.send({
       from: "COHO Form <onboarding@resend.dev>",
       to: ["sito.coho@gmail.com"],
-      subject: `Nuova compilazione form COHO - ${forms.length} annuncio/i`,
+      subject: `Nuova compilazione form COHO - ${forms ? forms.length : 0} annuncio/i`,
       html: emailBody,
     });
 
@@ -82,7 +68,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ success: true, data: emailResponse });
   } catch (error) {
-    console.error("Error sending email:", error);
-    return res.status(500).json({ error: error.message });
+    console.error("Error in send-form:", error);
+    return res.status(500).json({ error: error.message || String(error) });
   }
 }
